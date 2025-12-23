@@ -59,32 +59,13 @@ dd restart <container>  # Restart a container
 ## Screenshots
 
 ### Container List
-```
-┌───┬────────────────────┬────────────────────┬───────────────┬─────────────────────────┐
-│   │ NAME               │ IMAGE              │ STATUS        │ PORTS                   │
-├───┼────────────────────┼────────────────────┼───────────────┼─────────────────────────┤
-│ ● │ api-server         │ node:20            │ Up 2 hours    │ 3000->3000              │
-│ ● │ postgres-db        │ postgres           │ Up 2 hours    │ 5432->5432              │
-│ ○ │ nginx-proxy        │ nginx              │ Exited        │ -                       │
-└───┴────────────────────┴────────────────────┴───────────────┴─────────────────────────┘
-```
+![main-menu-screenshot](screenshots/image.png)
 
 ### Stats View
-```
-┌────────────────────────────────────────────────────────────────────┐
-│  Stats: api-server                                                 │
-├────────────────────────────────────────────────────────────────────┤
-│  CPU Usage: 2.4%                                                   │
-│  ████░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 2.4%                    │
-│                                                                    │
-│  Memory: 128.5 MB / 512 MB                                         │
-│  █████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░ 25.1%                   │
-│                                                                    │
-│  Network I/O: 1.2 MB / 856 KB                                      │
-│  Block I/O:   45 MB / 12 MB                                        │
-│  PIDs: 12                                                          │
-└────────────────────────────────────────────────────────────────────┘
-```
+![stats-view-screenshot](screenshots/image-1.png)
+
+## System Prune View
+![system-prune-view-screenshot](screenshots/image-2.png)
 
 ## Keyboard Shortcuts
 
