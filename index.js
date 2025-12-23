@@ -16,6 +16,7 @@ import {
   restartContainer,
 } from './src/containers.js';
 import { renderContainersTable } from './src/ui/table.js';
+import { quickRebuild } from './src/images.js';
 
 const VERSION = '1.0.0';
 
@@ -126,6 +127,37 @@ program
       spinner.succeed(`Container ${container} restarted`);
     } catch (error) {
       spinner.fail(`Failed to restart: ${error.message}`);
+      process.exit(1);
+    }
+  });
+
+program
+  .command('rebuild <container>')
+  .description('Rebuild container (stop, rebuild image, recreate)')
+  .option('--no-cache', 'Build without cache')
+  .action(async (container, options) => {
+    await checkDocker();
+    const spinner = ora(`Rebuilding ${container}...`).start();
+
+    try {
+      const result = await quickRebuild(container, {
+        noCache: options.cache === false,
+        onOutput: (msg) => {
+          spinner.text = msg.trim().substring(0, 60);
+        },
+      });
+
+      if (result.success) {
+        spinner.succeed(`Container ${container} rebuilt successfully`);
+        if (result.method === 'compose') {
+          console.log(chalk.gray(`  Used Docker Compose (${result.project}/${result.service})`));
+        }
+      } else {
+        spinner.fail(`Rebuild failed: ${result.error}`);
+        process.exit(1);
+      }
+    } catch (error) {
+      spinner.fail(`Failed to rebuild: ${error.message}`);
       process.exit(1);
     }
   });

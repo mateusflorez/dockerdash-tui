@@ -10,11 +10,14 @@ import {
   stopContainer,
   restartContainer,
   removeContainer,
+  inspectContainer,
 } from '../containers.js';
 import { streamLogs } from '../logs.js';
 import { showContainerStats } from '../stats.js';
 import { showDashboard } from '../dashboard.js';
 import { loadConfig, saveConfig } from '../utils/config.js';
+import { quickRebuild } from '../images.js';
+import { getComposeInfo, composeRebuild } from '../compose.js';
 
 /**
  * Display the main menu
@@ -128,7 +131,6 @@ async function containersMenu() {
  */
 async function containerActionsMenu(containerName) {
   clearScreen();
-  showHeader(`Container: ${containerName}`);
 
   const containers = await getContainers(true);
   const container = containers.find((c) => c.name === containerName);
@@ -139,12 +141,29 @@ async function containerActionsMenu(containerName) {
     return containersMenu();
   }
 
+  // Check if compose container
+  const fullInfo = await inspectContainer(containerName);
+  const composeInfo = getComposeInfo({ Labels: fullInfo.Config.Labels });
+
+  const headerText = composeInfo
+    ? `Container: ${containerName} ${chalk.gray(`[${composeInfo.projectName}/${composeInfo.serviceName}]`)}`
+    : `Container: ${containerName}`;
+
+  showHeader(headerText);
+
+  if (composeInfo) {
+    console.log(chalk.gray(`  Compose Project: ${composeInfo.projectName}`));
+    console.log(chalk.gray(`  Service: ${composeInfo.serviceName}`));
+    console.log(chalk.gray(`  Working Dir: ${composeInfo.workingDir}\n`));
+  }
+
   const isRunning = container.state === 'running';
 
   const choices = [
     { name: '📋 View Logs', value: 'logs' },
     { name: '📊 View Stats', value: 'stats' },
     { name: chalk.gray('─────────────────────'), value: 'separator', disabled: true },
+    { name: `🔨 Rebuild ${chalk.gray('(rebuild image + recreate)')}`, value: 'rebuild' },
   ];
 
   if (isRunning) {
@@ -172,6 +191,44 @@ async function containerActionsMenu(containerName) {
 
     case 'stats':
       await showContainerStats(containerName);
+      break;
+
+    case 'rebuild':
+      const useNoCache = await confirm({
+        message: 'Build without cache?',
+        default: false,
+      });
+
+      const confirmRebuild = await confirm({
+        message: `Rebuild ${containerName}? This will stop, rebuild, and recreate the container.`,
+        default: true,
+      });
+
+      if (confirmRebuild) {
+        console.log(''); // Empty line
+        spinner.start('Rebuilding container...');
+
+        try {
+          const result = await quickRebuild(containerName, {
+            noCache: useNoCache,
+            onOutput: (msg) => {
+              spinner.text = msg.trim().substring(0, 60);
+            },
+          });
+
+          if (result.success) {
+            spinner.succeed(`Container ${containerName} rebuilt successfully`);
+            if (result.method === 'compose') {
+              showStatus(`Used Docker Compose (${result.project}/${result.service})`, 'info');
+            }
+          } else {
+            spinner.fail(`Rebuild failed: ${result.error}`);
+          }
+        } catch (error) {
+          spinner.fail(`Rebuild failed: ${error.message}`);
+        }
+      }
+      await pressEnterToContinue();
       break;
 
     case 'start':

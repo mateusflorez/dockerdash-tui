@@ -183,8 +183,8 @@ dockerdash-tui/
 - [x] Auto-refresh configuration
 
 ### v1.2.0 - Build
-- [ ] Quick rebuild workflow
-- [ ] Docker Compose detection
+- [x] Quick rebuild workflow
+- [x] Docker Compose detection
 - [ ] Build progress visualization
 - [ ] Image tagging
 
