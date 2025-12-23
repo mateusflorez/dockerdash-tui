@@ -185,8 +185,8 @@ dockerdash-tui/
 ### v1.2.0 - Build
 - [x] Quick rebuild workflow
 - [x] Docker Compose detection
-- [ ] Build progress visualization
-- [ ] Image tagging
+- [x] Build progress visualization
+- [x] Image tagging
 
 ### v1.3.0 - Advanced
 - [ ] Exec shell integration

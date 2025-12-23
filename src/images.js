@@ -1,6 +1,7 @@
 import { spawn } from 'child_process';
 import docker, { listImages, getImage, getContainer } from './docker.js';
 import { formatBytes } from './utils/format.js';
+import { BuildProgressTracker } from './ui/build-progress.js';
 
 /**
  * Get all images with formatted info
@@ -63,10 +64,11 @@ export function buildImage(context, options = {}) {
     tag = null,
     noCache = false,
     onOutput = null,
+    onProgress = null,
   } = options;
 
   return new Promise((resolve, reject) => {
-    const args = ['build', context];
+    const args = ['build', context, '--progress=plain'];
 
     if (dockerfile !== 'Dockerfile') {
       args.push('-f', dockerfile);
@@ -79,30 +81,102 @@ export function buildImage(context, options = {}) {
     }
 
     const proc = spawn('docker', args, { shell: true });
+    const tracker = new BuildProgressTracker();
 
     let stdout = '';
     let stderr = '';
 
-    proc.stdout.on('data', (data) => {
+    const processOutput = (data, source) => {
       const str = data.toString();
-      stdout += str;
-      if (onOutput) onOutput(str, 'stdout');
-    });
+      if (source === 'stdout') {
+        stdout += str;
+      } else {
+        stderr += str;
+      }
 
-    proc.stderr.on('data', (data) => {
-      const str = data.toString();
-      stderr += str;
-      if (onOutput) onOutput(str, 'stderr');
-    });
+      // Process each line for progress tracking
+      const lines = str.split('\n');
+      for (const line of lines) {
+        tracker.processLine(line);
+      }
+
+      if (onOutput) onOutput(str, source);
+      if (onProgress) onProgress(tracker);
+    };
+
+    proc.stdout.on('data', (data) => processOutput(data, 'stdout'));
+    proc.stderr.on('data', (data) => processOutput(data, 'stderr'));
 
     proc.on('close', (code) => {
-      resolve({ code, stdout, stderr });
+      resolve({
+        code,
+        stdout,
+        stderr,
+        tracker,
+        imageId: tracker.imageId,
+        tag: tracker.tag,
+      });
     });
 
     proc.on('error', (err) => {
       reject(err);
     });
   });
+}
+
+/**
+ * Tag an image with a new name
+ * @param {string} sourceImage - Source image name or ID
+ * @param {string} targetImage - Target image name with tag
+ * @returns {Promise<void>}
+ */
+export async function tagImage(sourceImage, targetImage) {
+  const image = getImage(sourceImage);
+  await image.tag({
+    repo: targetImage.split(':')[0],
+    tag: targetImage.split(':')[1] || 'latest',
+  });
+}
+
+/**
+ * Get image history (layers)
+ * @param {string} imageId - Image ID or name
+ * @returns {Promise<Array>}
+ */
+export async function getImageHistory(imageId) {
+  const image = getImage(imageId);
+  const history = await image.history();
+
+  return history.map((layer) => ({
+    id: layer.Id?.replace('sha256:', '').substring(0, 12) || '<missing>',
+    created: new Date(layer.Created * 1000).toLocaleDateString(),
+    createdBy: layer.CreatedBy || '',
+    size: formatBytes(layer.Size),
+    sizeBytes: layer.Size,
+  }));
+}
+
+/**
+ * Inspect image for detailed info
+ * @param {string} imageId - Image ID or name
+ * @returns {Promise<Object>}
+ */
+export async function inspectImage(imageId) {
+  const image = getImage(imageId);
+  return image.inspect();
+}
+
+/**
+ * Get all tags for an image
+ * @param {string} imageId - Image ID
+ * @returns {Promise<string[]>}
+ */
+export async function getImageTags(imageId) {
+  const images = await listImages();
+  const targetImage = images.find((img) => img.Id === imageId || img.Id.includes(imageId));
+
+  if (!targetImage) return [];
+  return targetImage.RepoTags || [];
 }
 
 /**
@@ -240,4 +314,8 @@ export default {
   buildImage,
   quickRebuild,
   pruneImages,
+  tagImage,
+  getImageHistory,
+  inspectImage,
+  getImageTags,
 };

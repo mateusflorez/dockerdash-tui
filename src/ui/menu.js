@@ -2,7 +2,8 @@ import { select, confirm, input } from '@inquirer/prompts';
 import chalk from 'chalk';
 import ora from 'ora';
 import { showBanner, showHeader, showStatus, clearScreen } from './banner.js';
-import { renderContainersTable } from './table.js';
+import { renderContainersTable, renderImagesTable } from './table.js';
+import { renderBuildProgress, renderBuildResult, BuildProgressTracker } from './build-progress.js';
 import {
   getContainers,
   getContainerCounts,
@@ -16,7 +17,15 @@ import { streamLogs } from '../logs.js';
 import { showContainerStats } from '../stats.js';
 import { showDashboard } from '../dashboard.js';
 import { loadConfig, saveConfig } from '../utils/config.js';
-import { quickRebuild } from '../images.js';
+import {
+  quickRebuild,
+  getImages,
+  removeImage,
+  tagImage,
+  buildImage,
+  pruneImages,
+  inspectImage,
+} from '../images.js';
 import { getComposeInfo, composeRebuild } from '../compose.js';
 
 /**
@@ -57,9 +66,7 @@ export async function mainMenu() {
       await mainMenu();
       break;
     case 'images':
-      showStatus('Images management coming soon...', 'info');
-      await pressEnterToContinue();
-      await mainMenu();
+      await imagesMenu();
       break;
     case 'volumes':
       showStatus('Volumes management coming soon...', 'info');
@@ -304,6 +311,318 @@ async function pressEnterToContinue() {
     message: 'Press Enter to continue...',
     choices: [{ name: 'Continue', value: 'continue' }],
   });
+}
+
+/**
+ * Display images menu
+ */
+async function imagesMenu() {
+  clearScreen();
+  showHeader('Images');
+
+  const spinner = ora('Loading images...').start();
+  const images = await getImages();
+  spinner.stop();
+
+  if (images.length === 0) {
+    showStatus('No images found', 'warning');
+    await pressEnterToContinue();
+    return mainMenu();
+  }
+
+  console.log(renderImagesTable(images));
+  console.log(
+    chalk.gray('\n[Enter] Actions  [T] Tag  [D] Delete  [B] Build  [Q] Back\n')
+  );
+
+  const choices = images.map((img) => ({
+    name: `${img.repository}:${img.tag} ${chalk.gray(`(${img.size})`)}`,
+    value: { id: img.id, name: `${img.repository}:${img.tag}` },
+  }));
+
+  choices.push({ name: chalk.cyan('+ Build new image'), value: 'build' });
+  choices.push({ name: chalk.yellow('🧹 Prune unused images'), value: 'prune' });
+  choices.push({ name: chalk.gray('← Back to main menu'), value: 'back' });
+
+  const selected = await select({
+    message: 'Select an image:',
+    choices,
+  });
+
+  if (selected === 'back') {
+    return mainMenu();
+  }
+
+  if (selected === 'build') {
+    await buildImageMenu();
+    return;
+  }
+
+  if (selected === 'prune') {
+    await pruneImagesMenu();
+    return;
+  }
+
+  await imageActionsMenu(selected);
+}
+
+/**
+ * Display image actions menu
+ * @param {Object} imageInfo - Image info { id, name }
+ */
+async function imageActionsMenu(imageInfo) {
+  clearScreen();
+  showHeader(`Image: ${imageInfo.name}`);
+
+  const spinner = ora('Loading image details...').start();
+  let imageDetails;
+  try {
+    imageDetails = await inspectImage(imageInfo.id);
+    spinner.stop();
+
+    console.log(chalk.gray(`  ID: ${imageInfo.id}`));
+    console.log(chalk.gray(`  Created: ${new Date(imageDetails.Created).toLocaleString()}`));
+    console.log(chalk.gray(`  Architecture: ${imageDetails.Architecture}`));
+    console.log(chalk.gray(`  OS: ${imageDetails.Os}`));
+    if (imageDetails.RepoTags?.length > 1) {
+      console.log(chalk.gray(`  Tags: ${imageDetails.RepoTags.join(', ')}`));
+    }
+    console.log('');
+  } catch {
+    spinner.stop();
+  }
+
+  const choices = [
+    { name: '🏷️  Add Tag', value: 'tag' },
+    { name: '🔍 Inspect', value: 'inspect' },
+    { name: chalk.gray('─────────────────────'), value: 'separator', disabled: true },
+    { name: '🗑️  Remove', value: 'remove' },
+    { name: chalk.gray('─────────────────────'), value: 'separator2', disabled: true },
+    { name: '← Back', value: 'back' },
+  ];
+
+  const action = await select({
+    message: `Actions for ${imageInfo.name}:`,
+    choices,
+  });
+
+  const spinnerAction = ora();
+
+  switch (action) {
+    case 'tag':
+      const newTag = await input({
+        message: 'Enter new tag (e.g., myapp:v2.0 or myregistry/myapp:latest):',
+        validate: (value) => {
+          if (!value.trim()) return 'Tag cannot be empty';
+          if (!/^[a-zA-Z0-9][a-zA-Z0-9._\-/:]*$/.test(value)) {
+            return 'Invalid tag format';
+          }
+          return true;
+        },
+      });
+
+      spinnerAction.start(`Tagging ${imageInfo.name} as ${newTag}...`);
+      try {
+        await tagImage(imageInfo.name, newTag);
+        spinnerAction.succeed(`Image tagged as ${newTag}`);
+      } catch (error) {
+        spinnerAction.fail(`Failed to tag: ${error.message}`);
+      }
+      await pressEnterToContinue();
+      break;
+
+    case 'inspect':
+      clearScreen();
+      showHeader(`Inspect: ${imageInfo.name}`);
+
+      try {
+        const details = await inspectImage(imageInfo.id);
+        console.log(chalk.bold('\nImage Details:\n'));
+        console.log(chalk.gray('ID:'), details.Id.replace('sha256:', '').substring(0, 12));
+        console.log(chalk.gray('Created:'), new Date(details.Created).toLocaleString());
+        console.log(chalk.gray('Size:'), `${(details.Size / 1024 / 1024).toFixed(2)} MB`);
+        console.log(chalk.gray('Architecture:'), details.Architecture);
+        console.log(chalk.gray('OS:'), details.Os);
+
+        if (details.RepoTags?.length > 0) {
+          console.log(chalk.bold('\nTags:'));
+          for (const tag of details.RepoTags) {
+            console.log(chalk.cyan(`  ${tag}`));
+          }
+        }
+
+        if (details.Config?.Env?.length > 0) {
+          console.log(chalk.bold('\nEnvironment Variables:'));
+          for (const env of details.Config.Env.slice(0, 10)) {
+            console.log(chalk.gray(`  ${env}`));
+          }
+          if (details.Config.Env.length > 10) {
+            console.log(chalk.gray(`  ... and ${details.Config.Env.length - 10} more`));
+          }
+        }
+
+        if (details.Config?.ExposedPorts) {
+          console.log(chalk.bold('\nExposed Ports:'));
+          for (const port of Object.keys(details.Config.ExposedPorts)) {
+            console.log(chalk.gray(`  ${port}`));
+          }
+        }
+      } catch (error) {
+        console.log(chalk.red(`Error: ${error.message}`));
+      }
+
+      await pressEnterToContinue();
+      break;
+
+    case 'remove':
+      const confirmRemove = await confirm({
+        message: `Are you sure you want to remove ${imageInfo.name}?`,
+        default: false,
+      });
+
+      if (confirmRemove) {
+        const force = await confirm({
+          message: 'Force remove (even if used by containers)?',
+          default: false,
+        });
+
+        spinnerAction.start(`Removing ${imageInfo.name}...`);
+        try {
+          await removeImage(imageInfo.name, force);
+          spinnerAction.succeed(`Image ${imageInfo.name} removed`);
+          await pressEnterToContinue();
+          return imagesMenu();
+        } catch (error) {
+          spinnerAction.fail(`Failed to remove: ${error.message}`);
+        }
+      }
+      await pressEnterToContinue();
+      break;
+
+    case 'back':
+      return imagesMenu();
+  }
+
+  await imageActionsMenu(imageInfo);
+}
+
+/**
+ * Build image menu with progress visualization
+ */
+async function buildImageMenu() {
+  clearScreen();
+  showHeader('Build Image');
+
+  const context = await input({
+    message: 'Build context path (e.g., . or ./app):',
+    default: '.',
+    validate: (value) => {
+      if (!value.trim()) return 'Path cannot be empty';
+      return true;
+    },
+  });
+
+  const dockerfile = await input({
+    message: 'Dockerfile path (relative to context):',
+    default: 'Dockerfile',
+  });
+
+  const imageTag = await input({
+    message: 'Image tag (e.g., myapp:latest):',
+    validate: (value) => {
+      if (!value.trim()) return 'Tag cannot be empty';
+      return true;
+    },
+  });
+
+  const noCache = await confirm({
+    message: 'Build without cache?',
+    default: false,
+  });
+
+  const confirmBuild = await confirm({
+    message: `Build image ${imageTag} from ${context}?`,
+    default: true,
+  });
+
+  if (!confirmBuild) {
+    return imagesMenu();
+  }
+
+  clearScreen();
+  showHeader(`Building: ${imageTag}`);
+  console.log('');
+
+  let lastRender = '';
+  const updateInterval = setInterval(() => {
+    // Placeholder for continuous updates
+  }, 100);
+
+  try {
+    const result = await buildImage(context, {
+      dockerfile,
+      tag: imageTag,
+      noCache,
+      onProgress: (tracker) => {
+        const rendered = renderBuildProgress(tracker);
+        if (rendered !== lastRender) {
+          clearScreen();
+          showHeader(`Building: ${imageTag}`);
+          console.log('');
+          console.log(rendered);
+          lastRender = rendered;
+        }
+      },
+      onOutput: () => {},
+    });
+
+    clearInterval(updateInterval);
+    clearScreen();
+    showHeader(`Build: ${imageTag}`);
+    console.log('');
+
+    if (result.code === 0) {
+      console.log(renderBuildResult(result.tracker, true));
+      showStatus('Build completed successfully!', 'success');
+    } else {
+      console.log(renderBuildResult(result.tracker, false));
+      showStatus('Build failed!', 'error');
+    }
+  } catch (error) {
+    clearInterval(updateInterval);
+    showStatus(`Build error: ${error.message}`, 'error');
+  }
+
+  await pressEnterToContinue();
+  return imagesMenu();
+}
+
+/**
+ * Prune unused images
+ */
+async function pruneImagesMenu() {
+  const confirmPrune = await confirm({
+    message: 'Remove all unused (dangling) images?',
+    default: false,
+  });
+
+  if (!confirmPrune) {
+    return imagesMenu();
+  }
+
+  const spinner = ora('Pruning unused images...').start();
+  try {
+    const result = await pruneImages();
+    const spaceReclaimed = result.SpaceReclaimed || 0;
+    const count = result.ImagesDeleted?.length || 0;
+
+    spinner.succeed(`Pruned ${count} images, reclaimed ${(spaceReclaimed / 1024 / 1024).toFixed(2)} MB`);
+  } catch (error) {
+    spinner.fail(`Prune failed: ${error.message}`);
+  }
+
+  await pressEnterToContinue();
+  return imagesMenu();
 }
 
 /**
