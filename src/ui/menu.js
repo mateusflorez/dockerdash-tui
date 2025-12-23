@@ -1,4 +1,4 @@
-import { select, confirm, input } from '@inquirer/prompts';
+import { select, confirm, input, Separator } from '@inquirer/prompts';
 import chalk from 'chalk';
 import ora from 'ora';
 import { showBanner, showHeader, showStatus, clearScreen } from './banner.js';
@@ -80,7 +80,7 @@ export async function mainMenu() {
       { name: 'Images', value: 'images' },
       { name: 'Volumes', value: 'volumes' },
       { name: 'Networks', value: 'networks' },
-      { name: chalk.gray('─────────────────────'), value: 'separator', disabled: true },
+      new Separator(),
       { name: 'System Prune', value: 'prune' },
       { name: `Settings ${chalk.gray(`(refresh: ${config.refreshInterval / 1000}s)`)}`, value: 'settings' },
       { name: 'Exit', value: 'exit' },
@@ -199,7 +199,7 @@ async function containerActionsMenu(containerName) {
     choices.push({ name: '💻 Exec Shell', value: 'exec' });
   }
 
-  choices.push({ name: chalk.gray('─────────────────────'), value: 'separator', disabled: true });
+  choices.push(new Separator());
   choices.push({ name: `🔨 Rebuild ${chalk.gray('(rebuild image + recreate)')}`, value: 'rebuild' });
 
   if (isRunning) {
@@ -210,7 +210,7 @@ async function containerActionsMenu(containerName) {
   }
 
   choices.push({ name: '🗑️  Remove', value: 'remove' });
-  choices.push({ name: chalk.gray('─────────────────────'), value: 'separator2', disabled: true });
+  choices.push(new Separator());
   choices.push({ name: '← Back', value: 'back' });
 
   const action = await select({
@@ -466,9 +466,9 @@ async function imageActionsMenu(imageInfo) {
   const choices = [
     { name: '🏷️  Add Tag', value: 'tag' },
     { name: '🔍 Inspect', value: 'inspect' },
-    { name: chalk.gray('─────────────────────'), value: 'separator', disabled: true },
+    new Separator(),
     { name: '🗑️  Remove', value: 'remove' },
-    { name: chalk.gray('─────────────────────'), value: 'separator2', disabled: true },
+    new Separator(),
     { name: '← Back', value: 'back' },
   ];
 
@@ -796,9 +796,9 @@ async function volumeActionsMenu(volumeInfo) {
 
   const choices = [
     { name: '🔍 Inspect (full details)', value: 'inspect' },
-    { name: chalk.gray('─────────────────────'), value: 'separator', disabled: true },
+    new Separator(),
     { name: '🗑️  Remove', value: 'remove' },
-    { name: chalk.gray('─────────────────────'), value: 'separator2', disabled: true },
+    new Separator(),
     { name: '← Back', value: 'back' },
   ];
 
@@ -1069,14 +1069,14 @@ async function networkActionsMenu(networkInfo) {
   ];
 
   if (!networkInfo.isSystem) {
-    choices.push({ name: chalk.gray('─────────────────────'), value: 'separator', disabled: true });
+    choices.push(new Separator());
     choices.push({ name: '🗑️  Remove', value: 'remove' });
   } else {
-    choices.push({ name: chalk.gray('─────────────────────'), value: 'separator', disabled: true });
+    choices.push(new Separator());
     choices.push({ name: chalk.gray('🗑️  Remove (system network - disabled)'), value: 'remove-disabled', disabled: true });
   }
 
-  choices.push({ name: chalk.gray('─────────────────────'), value: 'separator2', disabled: true });
+  choices.push(new Separator());
   choices.push({ name: '← Back', value: 'back' });
 
   const action = await select({
@@ -1364,7 +1364,7 @@ async function systemPruneWizard() {
         name: `🔥 Full Clean ${chalk.gray(`(all unused resources) - ${formatBytes(totalReclaimable)}`)}`,
         value: 'full',
       },
-      { name: chalk.gray('─────────────────────'), value: 'separator', disabled: true },
+      new Separator(),
       {
         name: `📦 Stopped Containers only ${chalk.gray(`(${stoppedContainers.length}) - ${formatBytes(stoppedContainersSize)}`)}`,
         value: 'containers',
@@ -1385,7 +1385,7 @@ async function systemPruneWizard() {
         name: `🌐 Unused Networks only`,
         value: 'networks',
       },
-      { name: chalk.gray('─────────────────────'), value: 'separator2', disabled: true },
+      new Separator(),
       { name: '← Back to main menu', value: 'back' },
     ],
   });
@@ -1536,7 +1536,7 @@ async function settingsMenu() {
         name: `Show All Containers: ${chalk.cyan(config.showAllContainers ? 'Yes' : 'No')}`,
         value: 'showAll',
       },
-      { name: chalk.gray('─────────────────────'), value: 'separator', disabled: true },
+      new Separator(),
       { name: '← Back', value: 'back' },
     ],
   });
