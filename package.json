@@ -1,6 +1,6 @@
 {
   "name": "dockerdash-tui",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "A terminal UI for managing Docker containers with real-time monitoring",
   "type": "module",
   "main": "index.js",
