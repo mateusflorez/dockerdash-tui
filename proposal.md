@@ -177,10 +177,10 @@ dockerdash-tui/
 - [x] Basic stats view
 
 ### v1.1.0 - Monitoring
-- [ ] Live stats dashboard
-- [ ] ASCII charts for CPU/Memory
-- [ ] Multi-container view
-- [ ] Auto-refresh configuration
+- [x] Live stats dashboard
+- [x] ASCII charts for CPU/Memory
+- [x] Multi-container view
+- [x] Auto-refresh configuration
 
 ### v1.2.0 - Build
 - [ ] Quick rebuild workflow

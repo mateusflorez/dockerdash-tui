@@ -1,22 +1,38 @@
 import chalk from 'chalk';
 import readline from 'readline';
 import { getContainer } from './docker.js';
-import { showHeader, clearScreen } from './ui/banner.js';
-import { formatBytes, createProgressBar } from './utils/format.js';
+import { showHeader } from './ui/banner.js';
+import { formatBytes } from './utils/format.js';
+import { progressBar, sparkline, box } from './ui/charts.js';
+import renderer, { hideCursor, showCursor } from './ui/renderer.js';
+import { loadConfig } from './utils/config.js';
+
+// History for sparklines
+const cpuHistory = [];
+const memHistory = [];
+const HISTORY_SIZE = 30;
 
 /**
  * Show real-time container stats
  * @param {string} containerName - Container name or ID
  */
 export async function showContainerStats(containerName) {
-  clearScreen();
+  const config = loadConfig();
+
+  console.clear();
   showHeader(`Stats: ${containerName}`);
-  console.log(chalk.gray('Press Ctrl+C or Q to exit\n'));
+  console.log(chalk.gray('Press Q to exit\n'));
+
+  hideCursor();
 
   const container = getContainer(containerName);
 
   let previousCpu = null;
   let previousSystem = null;
+
+  // Clear history
+  cpuHistory.length = 0;
+  memHistory.length = 0;
 
   return new Promise((resolve) => {
     const statsStream = container.stats({ stream: true });
@@ -27,6 +43,8 @@ export async function showContainerStats(containerName) {
       if (streamRef) {
         streamRef.destroy?.();
       }
+      showCursor();
+      renderer.reset();
       process.stdin.setRawMode?.(false);
       process.stdin.removeListener('keypress', onKeypress);
       resolve();
@@ -67,7 +85,7 @@ export async function showContainerStats(containerName) {
 }
 
 /**
- * Display formatted stats
+ * Display formatted stats using flicker-free renderer
  * @param {string} containerName - Container name
  * @param {Object} stats - Docker stats object
  * @param {number} previousCpu - Previous CPU usage
@@ -78,12 +96,18 @@ function displayStats(containerName, stats, previousCpu, previousSystem) {
   const cpuDelta = stats.cpu_stats.cpu_usage.total_usage - (previousCpu || 0);
   const systemDelta = stats.cpu_stats.system_cpu_usage - (previousSystem || 0);
   const cpuCount = stats.cpu_stats.online_cpus || 1;
-  const cpuPercent = systemDelta > 0 ? (cpuDelta / systemDelta) * cpuCount * 100 : 0;
+  const cpuPercent = systemDelta > 0 ? Math.min(100, (cpuDelta / systemDelta) * cpuCount * 100) : 0;
 
   // Calculate memory
   const memUsage = stats.memory_stats.usage || 0;
   const memLimit = stats.memory_stats.limit || 1;
   const memPercent = (memUsage / memLimit) * 100;
+
+  // Update history
+  cpuHistory.push(cpuPercent);
+  memHistory.push(memPercent);
+  if (cpuHistory.length > HISTORY_SIZE) cpuHistory.shift();
+  if (memHistory.length > HISTORY_SIZE) memHistory.shift();
 
   // Network I/O
   let netRx = 0;
@@ -112,57 +136,28 @@ function displayStats(containerName, stats, previousCpu, previousSystem) {
   // PIDs
   const pids = stats.pids_stats?.current || 0;
 
-  // Clear and redraw
-  process.stdout.write('\x1B[2J\x1B[0f');
-  showHeader(`Stats: ${containerName}`);
-  console.log(chalk.gray('Press Q to go back\n'));
+  // Build output
+  const lines = [
+    '',
+    chalk.bold('  CPU Usage'),
+    `  ${progressBar(cpuPercent, 40)}`,
+    `  ${chalk.gray('History:')} ${sparkline(cpuHistory, { width: 30 })}`,
+    '',
+    chalk.bold('  Memory Usage'),
+    `  ${progressBar(memPercent, 40)}`,
+    `  ${chalk.cyan(formatBytes(memUsage))} / ${formatBytes(memLimit)}`,
+    `  ${chalk.gray('History:')} ${sparkline(memHistory, { width: 30 })}`,
+    '',
+    chalk.bold('  I/O Stats'),
+    `  ${chalk.gray('Network:')}  ↓ ${formatBytes(netRx).padEnd(12)} ↑ ${formatBytes(netTx)}`,
+    `  ${chalk.gray('Block:  ')}  R ${formatBytes(blockRead).padEnd(12)} W ${formatBytes(blockWrite)}`,
+    '',
+    `  ${chalk.gray('PIDs:')} ${chalk.cyan(pids)}`,
+    '',
+    chalk.gray(`  Updated: ${new Date().toLocaleTimeString()}`),
+  ];
 
-  // CPU
-  console.log(chalk.bold('  CPU Usage: ') + chalk.cyan(`${cpuPercent.toFixed(2)}%`));
-  console.log(`  ${createColoredBar(cpuPercent)} ${cpuPercent.toFixed(1)}%`);
-  console.log();
-
-  // Memory
-  console.log(
-    chalk.bold('  Memory: ') + chalk.cyan(`${formatBytes(memUsage)} / ${formatBytes(memLimit)}`)
-  );
-  console.log(`  ${createColoredBar(memPercent)} ${memPercent.toFixed(1)}%`);
-  console.log();
-
-  // Network
-  console.log(
-    chalk.bold('  Network I/O: ') + chalk.cyan(`${formatBytes(netRx)} / ${formatBytes(netTx)}`)
-  );
-
-  // Block I/O
-  console.log(
-    chalk.bold('  Block I/O:   ') +
-      chalk.cyan(`${formatBytes(blockRead)} / ${formatBytes(blockWrite)}`)
-  );
-  console.log();
-
-  // PIDs
-  console.log(chalk.bold('  PIDs: ') + chalk.cyan(pids));
-}
-
-/**
- * Create a colored progress bar based on percentage
- * @param {number} percent - Percentage (0-100)
- * @returns {string}
- */
-function createColoredBar(percent) {
-  const width = 40;
-  const filled = Math.round((percent / 100) * width);
-  const empty = width - filled;
-
-  let color = chalk.green;
-  if (percent > 80) {
-    color = chalk.red;
-  } else if (percent > 60) {
-    color = chalk.yellow;
-  }
-
-  return color('█'.repeat(filled)) + chalk.gray('░'.repeat(empty));
+  renderer.render(lines.join('\n'));
 }
 
 /**

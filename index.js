@@ -8,6 +8,7 @@ import { mainMenu } from './src/ui/menu.js';
 import { showBanner, showStatus } from './src/ui/banner.js';
 import { streamLogs } from './src/logs.js';
 import { showContainerStats } from './src/stats.js';
+import { showDashboard } from './src/dashboard.js';
 import {
   getContainers,
   startContainer,
@@ -71,8 +72,17 @@ program
     if (container) {
       await showContainerStats(container);
     } else {
-      showStatus('Multi-container stats coming soon...', 'info');
+      await showDashboard();
     }
+  });
+
+program
+  .command('dashboard')
+  .alias('dash')
+  .description('Show live stats dashboard for all running containers')
+  .action(async () => {
+    await checkDocker();
+    await showDashboard();
   });
 
 program

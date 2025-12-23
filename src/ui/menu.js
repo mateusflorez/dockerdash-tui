@@ -1,4 +1,4 @@
-import { select, confirm } from '@inquirer/prompts';
+import { select, confirm, input } from '@inquirer/prompts';
 import chalk from 'chalk';
 import ora from 'ora';
 import { showBanner, showHeader, showStatus, clearScreen } from './banner.js';
@@ -13,6 +13,8 @@ import {
 } from '../containers.js';
 import { streamLogs } from '../logs.js';
 import { showContainerStats } from '../stats.js';
+import { showDashboard } from '../dashboard.js';
+import { loadConfig, saveConfig } from '../utils/config.js';
 
 /**
  * Display the main menu
@@ -23,6 +25,8 @@ export async function mainMenu() {
 
   const counts = await getContainerCounts();
 
+  const config = loadConfig();
+
   const choice = await select({
     message: 'DockerDash - Main Menu',
     choices: [
@@ -30,11 +34,13 @@ export async function mainMenu() {
         name: `Containers (${chalk.green(counts.running)} running, ${chalk.red(counts.stopped)} stopped)`,
         value: 'containers',
       },
+      { name: `Dashboard ${chalk.gray('(live stats)')}`, value: 'dashboard' },
       { name: 'Images', value: 'images' },
       { name: 'Volumes', value: 'volumes' },
       { name: 'Networks', value: 'networks' },
       { name: chalk.gray('─────────────────────'), value: 'separator', disabled: true },
       { name: 'System Prune', value: 'prune' },
+      { name: `Settings ${chalk.gray(`(refresh: ${config.refreshInterval / 1000}s)`)}`, value: 'settings' },
       { name: 'Exit', value: 'exit' },
     ],
   });
@@ -42,6 +48,10 @@ export async function mainMenu() {
   switch (choice) {
     case 'containers':
       await containersMenu();
+      break;
+    case 'dashboard':
+      await showDashboard();
+      await mainMenu();
       break;
     case 'images':
       showStatus('Images management coming soon...', 'info');
@@ -63,8 +73,11 @@ export async function mainMenu() {
       await pressEnterToContinue();
       await mainMenu();
       break;
+    case 'settings':
+      await settingsMenu();
+      break;
     case 'exit':
-      console.log(chalk.cyan('\nGoodbye! 👋\n'));
+      console.log(chalk.cyan('\nGoodbye!\n'));
       process.exit(0);
   }
 }
@@ -234,6 +247,90 @@ async function pressEnterToContinue() {
     message: 'Press Enter to continue...',
     choices: [{ name: 'Continue', value: 'continue' }],
   });
+}
+
+/**
+ * Display settings menu
+ */
+async function settingsMenu() {
+  clearScreen();
+  showHeader('Settings');
+
+  const config = loadConfig();
+
+  const choice = await select({
+    message: 'Configure DockerDash:',
+    choices: [
+      {
+        name: `Refresh Interval: ${chalk.cyan(config.refreshInterval / 1000 + 's')}`,
+        value: 'refresh',
+      },
+      {
+        name: `Log Tail Lines: ${chalk.cyan(config.logTail)}`,
+        value: 'logTail',
+      },
+      {
+        name: `Show All Containers: ${chalk.cyan(config.showAllContainers ? 'Yes' : 'No')}`,
+        value: 'showAll',
+      },
+      { name: chalk.gray('─────────────────────'), value: 'separator', disabled: true },
+      { name: '← Back', value: 'back' },
+    ],
+  });
+
+  switch (choice) {
+    case 'refresh':
+      const interval = await select({
+        message: 'Select refresh interval:',
+        choices: [
+          { name: '1 second', value: 1000 },
+          { name: '2 seconds (default)', value: 2000 },
+          { name: '3 seconds', value: 3000 },
+          { name: '5 seconds', value: 5000 },
+          { name: '10 seconds', value: 10000 },
+        ],
+      });
+      config.refreshInterval = interval;
+      saveConfig(config);
+      showStatus(`Refresh interval set to ${interval / 1000}s`, 'success');
+      await pressEnterToContinue();
+      await settingsMenu();
+      break;
+
+    case 'logTail':
+      const tailInput = await input({
+        message: 'Number of log lines to tail:',
+        default: String(config.logTail),
+        validate: (value) => {
+          const num = parseInt(value, 10);
+          if (isNaN(num) || num < 10 || num > 1000) {
+            return 'Enter a number between 10 and 1000';
+          }
+          return true;
+        },
+      });
+      config.logTail = parseInt(tailInput, 10);
+      saveConfig(config);
+      showStatus(`Log tail set to ${config.logTail} lines`, 'success');
+      await pressEnterToContinue();
+      await settingsMenu();
+      break;
+
+    case 'showAll':
+      config.showAllContainers = !config.showAllContainers;
+      saveConfig(config);
+      showStatus(
+        `Show all containers: ${config.showAllContainers ? 'enabled' : 'disabled'}`,
+        'success'
+      );
+      await pressEnterToContinue();
+      await settingsMenu();
+      break;
+
+    case 'back':
+      await mainMenu();
+      break;
+  }
 }
 
 export default { mainMenu };
