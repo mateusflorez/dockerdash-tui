@@ -12,6 +12,8 @@ import {
   restartContainer,
   removeContainer,
   inspectContainer,
+  detectShell,
+  openInteractiveShell,
 } from '../containers.js';
 import { streamLogs } from '../logs.js';
 import { showContainerStats } from '../stats.js';
@@ -27,6 +29,34 @@ import {
   inspectImage,
 } from '../images.js';
 import { getComposeInfo, composeRebuild } from '../compose.js';
+import {
+  getVolumes,
+  inspectVolume,
+  createVolume,
+  removeVolume,
+  pruneVolumes,
+  getVolumeContainers,
+} from '../volumes.js';
+import {
+  getNetworks,
+  inspectNetwork,
+  createNetwork,
+  removeNetwork,
+  pruneNetworks,
+  getNetworkContainers,
+  isSystemNetwork,
+} from '../networks.js';
+import { renderVolumesTable, renderNetworksTable } from './table.js';
+import {
+  getDiskUsage,
+  pruneContainers as dockerPruneContainers,
+  pruneImages as dockerPruneImages,
+  pruneVolumes as dockerPruneVolumes,
+  pruneNetworks as dockerPruneNetworks,
+  pruneBuildCache,
+} from '../docker.js';
+import { formatBytes } from '../utils/format.js';
+import { progressBar } from './charts.js';
 
 /**
  * Display the main menu
@@ -69,19 +99,13 @@ export async function mainMenu() {
       await imagesMenu();
       break;
     case 'volumes':
-      showStatus('Volumes management coming soon...', 'info');
-      await pressEnterToContinue();
-      await mainMenu();
+      await volumesMenu();
       break;
     case 'networks':
-      showStatus('Networks management coming soon...', 'info');
-      await pressEnterToContinue();
-      await mainMenu();
+      await networksMenu();
       break;
     case 'prune':
-      showStatus('System prune coming soon...', 'info');
-      await pressEnterToContinue();
-      await mainMenu();
+      await systemPruneWizard();
       break;
     case 'settings':
       await settingsMenu();
@@ -169,9 +193,14 @@ async function containerActionsMenu(containerName) {
   const choices = [
     { name: '📋 View Logs', value: 'logs' },
     { name: '📊 View Stats', value: 'stats' },
-    { name: chalk.gray('─────────────────────'), value: 'separator', disabled: true },
-    { name: `🔨 Rebuild ${chalk.gray('(rebuild image + recreate)')}`, value: 'rebuild' },
   ];
+
+  if (isRunning) {
+    choices.push({ name: '💻 Exec Shell', value: 'exec' });
+  }
+
+  choices.push({ name: chalk.gray('─────────────────────'), value: 'separator', disabled: true });
+  choices.push({ name: `🔨 Rebuild ${chalk.gray('(rebuild image + recreate)')}`, value: 'rebuild' });
 
   if (isRunning) {
     choices.push({ name: '🔄 Restart', value: 'restart' });
@@ -198,6 +227,48 @@ async function containerActionsMenu(containerName) {
 
     case 'stats':
       await showContainerStats(containerName);
+      break;
+
+    case 'exec':
+      const shellChoice = await select({
+        message: 'Select shell:',
+        choices: [
+          { name: '/bin/bash (if available)', value: 'bash' },
+          { name: '/bin/sh (fallback)', value: 'sh' },
+          { name: 'Auto-detect', value: 'auto' },
+          { name: 'Custom command', value: 'custom' },
+        ],
+      });
+
+      let shellPath = '/bin/sh';
+
+      if (shellChoice === 'auto') {
+        spinner.start('Detecting available shell...');
+        try {
+          shellPath = await detectShell(containerName);
+          spinner.succeed(`Detected: ${shellPath}`);
+        } catch {
+          spinner.warn('Using fallback: /bin/sh');
+        }
+      } else if (shellChoice === 'bash') {
+        shellPath = '/bin/bash';
+      } else if (shellChoice === 'custom') {
+        shellPath = await input({
+          message: 'Enter command to execute:',
+          default: '/bin/sh',
+        });
+      }
+
+      console.log(chalk.cyan(`\nOpening shell in ${containerName}...`));
+      console.log(chalk.gray('Type "exit" to return to DockerDash\n'));
+
+      try {
+        await openInteractiveShell(containerName, { shell: shellPath });
+        console.log(chalk.cyan('\nShell session ended'));
+      } catch (error) {
+        showStatus(`Shell error: ${error.message}`, 'error');
+      }
+      await pressEnterToContinue();
       break;
 
     case 'rebuild':
@@ -623,6 +694,822 @@ async function pruneImagesMenu() {
 
   await pressEnterToContinue();
   return imagesMenu();
+}
+
+/**
+ * Display volumes menu
+ */
+async function volumesMenu() {
+  clearScreen();
+  showHeader('Volumes');
+
+  const spinner = ora('Loading volumes...').start();
+  const volumes = await getVolumes();
+  spinner.stop();
+
+  if (volumes.length === 0) {
+    showStatus('No volumes found', 'warning');
+
+    const action = await select({
+      message: 'What would you like to do?',
+      choices: [
+        { name: chalk.cyan('+ Create new volume'), value: 'create' },
+        { name: chalk.gray('← Back to main menu'), value: 'back' },
+      ],
+    });
+
+    if (action === 'create') {
+      await createVolumeMenu();
+      return;
+    }
+    return mainMenu();
+  }
+
+  console.log(renderVolumesTable(volumes));
+  console.log(
+    chalk.gray('\n[Enter] Inspect  [D] Delete  [C] Create  [Q] Back\n')
+  );
+
+  const choices = volumes.map((vol) => ({
+    name: `${vol.name} ${chalk.gray(`(${vol.driver})`)}`,
+    value: { name: vol.name, driver: vol.driver },
+  }));
+
+  choices.push({ name: chalk.cyan('+ Create new volume'), value: 'create' });
+  choices.push({ name: chalk.yellow('🧹 Prune unused volumes'), value: 'prune' });
+  choices.push({ name: chalk.gray('← Back to main menu'), value: 'back' });
+
+  const selected = await select({
+    message: 'Select a volume:',
+    choices,
+  });
+
+  if (selected === 'back') {
+    return mainMenu();
+  }
+
+  if (selected === 'create') {
+    await createVolumeMenu();
+    return;
+  }
+
+  if (selected === 'prune') {
+    await pruneVolumesMenu();
+    return;
+  }
+
+  await volumeActionsMenu(selected);
+}
+
+/**
+ * Display volume actions menu
+ * @param {Object} volumeInfo - Volume info { name, driver }
+ */
+async function volumeActionsMenu(volumeInfo) {
+  clearScreen();
+  showHeader(`Volume: ${volumeInfo.name}`);
+
+  const spinner = ora('Loading volume details...').start();
+  let volumeDetails;
+  let containers = [];
+
+  try {
+    volumeDetails = await inspectVolume(volumeInfo.name);
+    containers = await getVolumeContainers(volumeInfo.name);
+    spinner.stop();
+
+    console.log(chalk.gray(`  Driver: ${volumeDetails.Driver}`));
+    console.log(chalk.gray(`  Scope: ${volumeDetails.Scope}`));
+    console.log(chalk.gray(`  Mountpoint: ${volumeDetails.Mountpoint}`));
+
+    if (containers.length > 0) {
+      console.log(chalk.bold('\n  Used by containers:'));
+      for (const c of containers) {
+        const stateColor = c.state === 'running' ? chalk.green : chalk.red;
+        console.log(`    ${stateColor('●')} ${c.name}`);
+      }
+    }
+    console.log('');
+  } catch {
+    spinner.stop();
+  }
+
+  const choices = [
+    { name: '🔍 Inspect (full details)', value: 'inspect' },
+    { name: chalk.gray('─────────────────────'), value: 'separator', disabled: true },
+    { name: '🗑️  Remove', value: 'remove' },
+    { name: chalk.gray('─────────────────────'), value: 'separator2', disabled: true },
+    { name: '← Back', value: 'back' },
+  ];
+
+  const action = await select({
+    message: `Actions for ${volumeInfo.name}:`,
+    choices,
+  });
+
+  const spinnerAction = ora();
+
+  switch (action) {
+    case 'inspect':
+      clearScreen();
+      showHeader(`Inspect: ${volumeInfo.name}`);
+
+      try {
+        const details = await inspectVolume(volumeInfo.name);
+        console.log(chalk.bold('\nVolume Details:\n'));
+        console.log(chalk.gray('Name:'), details.Name);
+        console.log(chalk.gray('Driver:'), details.Driver);
+        console.log(chalk.gray('Scope:'), details.Scope);
+        console.log(chalk.gray('Mountpoint:'), details.Mountpoint);
+        console.log(chalk.gray('Created:'), details.CreatedAt || 'N/A');
+
+        if (Object.keys(details.Labels || {}).length > 0) {
+          console.log(chalk.bold('\nLabels:'));
+          for (const [key, value] of Object.entries(details.Labels)) {
+            console.log(chalk.gray(`  ${key}: ${value}`));
+          }
+        }
+
+        if (Object.keys(details.Options || {}).length > 0) {
+          console.log(chalk.bold('\nOptions:'));
+          for (const [key, value] of Object.entries(details.Options)) {
+            console.log(chalk.gray(`  ${key}: ${value}`));
+          }
+        }
+      } catch (error) {
+        console.log(chalk.red(`Error: ${error.message}`));
+      }
+
+      await pressEnterToContinue();
+      break;
+
+    case 'remove':
+      if (containers.length > 0) {
+        showStatus(`Volume is in use by ${containers.length} container(s)`, 'warning');
+      }
+
+      const confirmRemove = await confirm({
+        message: `Are you sure you want to remove ${volumeInfo.name}?`,
+        default: false,
+      });
+
+      if (confirmRemove) {
+        spinnerAction.start(`Removing ${volumeInfo.name}...`);
+        try {
+          await removeVolume(volumeInfo.name);
+          spinnerAction.succeed(`Volume ${volumeInfo.name} removed`);
+          await pressEnterToContinue();
+          return volumesMenu();
+        } catch (error) {
+          spinnerAction.fail(`Failed to remove: ${error.message}`);
+        }
+      }
+      await pressEnterToContinue();
+      break;
+
+    case 'back':
+      return volumesMenu();
+  }
+
+  await volumeActionsMenu(volumeInfo);
+}
+
+/**
+ * Create volume menu
+ */
+async function createVolumeMenu() {
+  clearScreen();
+  showHeader('Create Volume');
+
+  const name = await input({
+    message: 'Volume name:',
+    validate: (value) => {
+      if (!value.trim()) return 'Name cannot be empty';
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(value)) {
+        return 'Invalid volume name format';
+      }
+      return true;
+    },
+  });
+
+  const driver = await select({
+    message: 'Driver:',
+    choices: [
+      { name: 'local (default)', value: 'local' },
+      { name: 'Custom', value: 'custom' },
+    ],
+  });
+
+  let driverName = 'local';
+  if (driver === 'custom') {
+    driverName = await input({
+      message: 'Driver name:',
+      default: 'local',
+    });
+  }
+
+  const confirmCreate = await confirm({
+    message: `Create volume "${name}" with driver "${driverName}"?`,
+    default: true,
+  });
+
+  if (!confirmCreate) {
+    return volumesMenu();
+  }
+
+  const spinner = ora(`Creating volume ${name}...`).start();
+  try {
+    await createVolume({ name, driver: driverName });
+    spinner.succeed(`Volume ${name} created`);
+  } catch (error) {
+    spinner.fail(`Failed to create: ${error.message}`);
+  }
+
+  await pressEnterToContinue();
+  return volumesMenu();
+}
+
+/**
+ * Prune unused volumes
+ */
+async function pruneVolumesMenu() {
+  const confirmPrune = await confirm({
+    message: 'Remove all unused volumes? (This cannot be undone!)',
+    default: false,
+  });
+
+  if (!confirmPrune) {
+    return volumesMenu();
+  }
+
+  const spinner = ora('Pruning unused volumes...').start();
+  try {
+    const result = await pruneVolumes();
+    const spaceReclaimed = result.SpaceReclaimed || 0;
+    const count = result.VolumesDeleted?.length || 0;
+
+    spinner.succeed(`Pruned ${count} volumes, reclaimed ${(spaceReclaimed / 1024 / 1024).toFixed(2)} MB`);
+  } catch (error) {
+    spinner.fail(`Prune failed: ${error.message}`);
+  }
+
+  await pressEnterToContinue();
+  return volumesMenu();
+}
+
+/**
+ * Display networks menu
+ */
+async function networksMenu() {
+  clearScreen();
+  showHeader('Networks');
+
+  const spinner = ora('Loading networks...').start();
+  const networks = await getNetworks();
+  spinner.stop();
+
+  if (networks.length === 0) {
+    showStatus('No networks found', 'warning');
+
+    const action = await select({
+      message: 'What would you like to do?',
+      choices: [
+        { name: chalk.cyan('+ Create new network'), value: 'create' },
+        { name: chalk.gray('← Back to main menu'), value: 'back' },
+      ],
+    });
+
+    if (action === 'create') {
+      await createNetworkMenu();
+      return;
+    }
+    return mainMenu();
+  }
+
+  console.log(renderNetworksTable(networks));
+  console.log(
+    chalk.gray('\n[Enter] Inspect  [D] Delete  [C] Create  [Q] Back\n')
+  );
+
+  const choices = networks.map((net) => {
+    const isSystem = isSystemNetwork(net.name);
+    const label = isSystem ? chalk.yellow('(system)') : chalk.gray(`(${net.containers} containers)`);
+    return {
+      name: `${net.name} ${label}`,
+      value: { id: net.id, name: net.name, isSystem },
+    };
+  });
+
+  choices.push({ name: chalk.cyan('+ Create new network'), value: 'create' });
+  choices.push({ name: chalk.yellow('🧹 Prune unused networks'), value: 'prune' });
+  choices.push({ name: chalk.gray('← Back to main menu'), value: 'back' });
+
+  const selected = await select({
+    message: 'Select a network:',
+    choices,
+  });
+
+  if (selected === 'back') {
+    return mainMenu();
+  }
+
+  if (selected === 'create') {
+    await createNetworkMenu();
+    return;
+  }
+
+  if (selected === 'prune') {
+    await pruneNetworksMenu();
+    return;
+  }
+
+  await networkActionsMenu(selected);
+}
+
+/**
+ * Display network actions menu
+ * @param {Object} networkInfo - Network info { id, name, isSystem }
+ */
+async function networkActionsMenu(networkInfo) {
+  clearScreen();
+  showHeader(`Network: ${networkInfo.name}`);
+
+  const spinner = ora('Loading network details...').start();
+  let networkDetails;
+  let containers = [];
+
+  try {
+    networkDetails = await inspectNetwork(networkInfo.id);
+    containers = await getNetworkContainers(networkInfo.id);
+    spinner.stop();
+
+    console.log(chalk.gray(`  Driver: ${networkDetails.Driver}`));
+    console.log(chalk.gray(`  Scope: ${networkDetails.Scope}`));
+    console.log(chalk.gray(`  Internal: ${networkDetails.Internal ? 'Yes' : 'No'}`));
+
+    if (networkDetails.IPAM?.Config?.length > 0) {
+      const ipam = networkDetails.IPAM.Config[0];
+      if (ipam.Subnet) console.log(chalk.gray(`  Subnet: ${ipam.Subnet}`));
+      if (ipam.Gateway) console.log(chalk.gray(`  Gateway: ${ipam.Gateway}`));
+    }
+
+    if (containers.length > 0) {
+      console.log(chalk.bold('\n  Connected containers:'));
+      for (const c of containers) {
+        console.log(`    ${chalk.cyan('●')} ${c.name} ${chalk.gray(`(${c.ipv4 || 'no IP'})`)}`);
+      }
+    }
+    console.log('');
+  } catch {
+    spinner.stop();
+  }
+
+  const choices = [
+    { name: '🔍 Inspect (full details)', value: 'inspect' },
+  ];
+
+  if (!networkInfo.isSystem) {
+    choices.push({ name: chalk.gray('─────────────────────'), value: 'separator', disabled: true });
+    choices.push({ name: '🗑️  Remove', value: 'remove' });
+  } else {
+    choices.push({ name: chalk.gray('─────────────────────'), value: 'separator', disabled: true });
+    choices.push({ name: chalk.gray('🗑️  Remove (system network - disabled)'), value: 'remove-disabled', disabled: true });
+  }
+
+  choices.push({ name: chalk.gray('─────────────────────'), value: 'separator2', disabled: true });
+  choices.push({ name: '← Back', value: 'back' });
+
+  const action = await select({
+    message: `Actions for ${networkInfo.name}:`,
+    choices,
+  });
+
+  const spinnerAction = ora();
+
+  switch (action) {
+    case 'inspect':
+      clearScreen();
+      showHeader(`Inspect: ${networkInfo.name}`);
+
+      try {
+        const details = await inspectNetwork(networkInfo.id);
+        console.log(chalk.bold('\nNetwork Details:\n'));
+        console.log(chalk.gray('Name:'), details.Name);
+        console.log(chalk.gray('ID:'), details.Id.substring(0, 12));
+        console.log(chalk.gray('Driver:'), details.Driver);
+        console.log(chalk.gray('Scope:'), details.Scope);
+        console.log(chalk.gray('Internal:'), details.Internal ? 'Yes' : 'No');
+        console.log(chalk.gray('Attachable:'), details.Attachable ? 'Yes' : 'No');
+        console.log(chalk.gray('Created:'), details.Created || 'N/A');
+
+        if (details.IPAM?.Config?.length > 0) {
+          console.log(chalk.bold('\nIPAM Config:'));
+          for (const config of details.IPAM.Config) {
+            if (config.Subnet) console.log(chalk.gray(`  Subnet: ${config.Subnet}`));
+            if (config.Gateway) console.log(chalk.gray(`  Gateway: ${config.Gateway}`));
+            if (config.IPRange) console.log(chalk.gray(`  IP Range: ${config.IPRange}`));
+          }
+        }
+
+        if (Object.keys(details.Labels || {}).length > 0) {
+          console.log(chalk.bold('\nLabels:'));
+          for (const [key, value] of Object.entries(details.Labels)) {
+            console.log(chalk.gray(`  ${key}: ${value}`));
+          }
+        }
+
+        if (containers.length > 0) {
+          console.log(chalk.bold('\nContainers:'));
+          for (const c of containers) {
+            console.log(chalk.cyan(`  ${c.name}`));
+            console.log(chalk.gray(`    IPv4: ${c.ipv4 || 'N/A'}`));
+            console.log(chalk.gray(`    MAC: ${c.mac || 'N/A'}`));
+          }
+        }
+      } catch (error) {
+        console.log(chalk.red(`Error: ${error.message}`));
+      }
+
+      await pressEnterToContinue();
+      break;
+
+    case 'remove':
+      if (containers.length > 0) {
+        showStatus(`Network has ${containers.length} connected container(s)`, 'warning');
+      }
+
+      const confirmRemove = await confirm({
+        message: `Are you sure you want to remove ${networkInfo.name}?`,
+        default: false,
+      });
+
+      if (confirmRemove) {
+        spinnerAction.start(`Removing ${networkInfo.name}...`);
+        try {
+          await removeNetwork(networkInfo.id);
+          spinnerAction.succeed(`Network ${networkInfo.name} removed`);
+          await pressEnterToContinue();
+          return networksMenu();
+        } catch (error) {
+          spinnerAction.fail(`Failed to remove: ${error.message}`);
+        }
+      }
+      await pressEnterToContinue();
+      break;
+
+    case 'back':
+      return networksMenu();
+  }
+
+  await networkActionsMenu(networkInfo);
+}
+
+/**
+ * Create network menu
+ */
+async function createNetworkMenu() {
+  clearScreen();
+  showHeader('Create Network');
+
+  const name = await input({
+    message: 'Network name:',
+    validate: (value) => {
+      if (!value.trim()) return 'Name cannot be empty';
+      if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(value)) {
+        return 'Invalid network name format';
+      }
+      return true;
+    },
+  });
+
+  const driver = await select({
+    message: 'Driver:',
+    choices: [
+      { name: 'bridge (default)', value: 'bridge' },
+      { name: 'host', value: 'host' },
+      { name: 'overlay', value: 'overlay' },
+      { name: 'macvlan', value: 'macvlan' },
+      { name: 'none', value: 'none' },
+    ],
+  });
+
+  const internal = await confirm({
+    message: 'Internal network? (no external access)',
+    default: false,
+  });
+
+  const configureSubnet = await confirm({
+    message: 'Configure custom subnet?',
+    default: false,
+  });
+
+  let subnet = null;
+  let gateway = null;
+
+  if (configureSubnet) {
+    subnet = await input({
+      message: 'Subnet (e.g., 172.20.0.0/16):',
+      validate: (value) => {
+        if (!value.match(/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\/\d{1,2}$/)) {
+          return 'Invalid subnet format (use CIDR notation)';
+        }
+        return true;
+      },
+    });
+
+    gateway = await input({
+      message: 'Gateway (e.g., 172.20.0.1):',
+      validate: (value) => {
+        if (!value.match(/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/)) {
+          return 'Invalid IP address format';
+        }
+        return true;
+      },
+    });
+  }
+
+  const confirmCreate = await confirm({
+    message: `Create network "${name}" with driver "${driver}"?`,
+    default: true,
+  });
+
+  if (!confirmCreate) {
+    return networksMenu();
+  }
+
+  const spinner = ora(`Creating network ${name}...`).start();
+  try {
+    await createNetwork({ name, driver, internal, subnet, gateway });
+    spinner.succeed(`Network ${name} created`);
+  } catch (error) {
+    spinner.fail(`Failed to create: ${error.message}`);
+  }
+
+  await pressEnterToContinue();
+  return networksMenu();
+}
+
+/**
+ * Prune unused networks
+ */
+async function pruneNetworksMenu() {
+  const confirmPrune = await confirm({
+    message: 'Remove all unused networks?',
+    default: false,
+  });
+
+  if (!confirmPrune) {
+    return networksMenu();
+  }
+
+  const spinner = ora('Pruning unused networks...').start();
+  try {
+    const result = await pruneNetworks();
+    const count = result.NetworksDeleted?.length || 0;
+
+    spinner.succeed(`Pruned ${count} networks`);
+  } catch (error) {
+    spinner.fail(`Prune failed: ${error.message}`);
+  }
+
+  await pressEnterToContinue();
+  return networksMenu();
+}
+
+/**
+ * System Prune Wizard - Interactive cleanup tool
+ */
+async function systemPruneWizard() {
+  clearScreen();
+  showHeader('System Prune Wizard');
+
+  console.log(chalk.gray('  Analyzing Docker disk usage...\n'));
+
+  const spinner = ora('Calculating disk usage...').start();
+
+  let diskUsage;
+  try {
+    diskUsage = await getDiskUsage();
+    spinner.stop();
+  } catch (error) {
+    spinner.fail('Failed to get disk usage');
+    console.log(chalk.red(`  Error: ${error.message}`));
+    await pressEnterToContinue();
+    return mainMenu();
+  }
+
+  // Calculate usage stats
+  const containers = diskUsage.Containers || [];
+  const images = diskUsage.Images || [];
+  const volumes = diskUsage.Volumes || [];
+  const buildCache = diskUsage.BuildCache || [];
+
+  const stoppedContainers = containers.filter((c) => c.State !== 'running');
+  const danglingImages = images.filter((i) => i.Containers === 0);
+  const unusedVolumes = volumes.filter((v) => v.UsageData?.RefCount === 0);
+
+  const stoppedContainersSize = stoppedContainers.reduce((acc, c) => acc + (c.SizeRw || 0), 0);
+  const danglingImagesSize = danglingImages.reduce((acc, i) => acc + (i.Size || 0), 0);
+  const unusedVolumesSize = unusedVolumes.reduce((acc, v) => acc + (v.UsageData?.Size || 0), 0);
+  const buildCacheSize = buildCache.reduce((acc, b) => acc + (b.Size || 0), 0);
+
+  const totalReclaimable = stoppedContainersSize + danglingImagesSize + unusedVolumesSize + buildCacheSize;
+
+  // Display current usage
+  console.log(chalk.bold('  Docker Disk Usage Summary\n'));
+
+  const maxBarWidth = 30;
+  const totalImagesSize = images.reduce((acc, i) => acc + (i.Size || 0), 0);
+  const totalVolumesSize = volumes.reduce((acc, v) => acc + (v.UsageData?.Size || 0), 0);
+  const totalContainersSize = containers.reduce((acc, c) => acc + (c.SizeRw || 0) + (c.SizeRootFs || 0), 0);
+
+  const maxSize = Math.max(totalImagesSize, totalVolumesSize, totalContainersSize, buildCacheSize, 1);
+
+  console.log(chalk.cyan('  Images:'));
+  console.log(`    Total: ${images.length} (${formatBytes(totalImagesSize)})`);
+  console.log(`    ${progressBar((totalImagesSize / maxSize) * 100, maxBarWidth, { showPercent: false })}`);
+  console.log(chalk.yellow(`    Reclaimable: ${danglingImages.length} images (${formatBytes(danglingImagesSize)})`));
+  console.log('');
+
+  console.log(chalk.cyan('  Containers:'));
+  console.log(`    Total: ${containers.length} (${formatBytes(totalContainersSize)})`);
+  console.log(`    ${progressBar((totalContainersSize / maxSize) * 100, maxBarWidth, { showPercent: false })}`);
+  console.log(chalk.yellow(`    Reclaimable: ${stoppedContainers.length} stopped (${formatBytes(stoppedContainersSize)})`));
+  console.log('');
+
+  console.log(chalk.cyan('  Volumes:'));
+  console.log(`    Total: ${volumes.length} (${formatBytes(totalVolumesSize)})`);
+  console.log(`    ${progressBar((totalVolumesSize / maxSize) * 100, maxBarWidth, { showPercent: false })}`);
+  console.log(chalk.yellow(`    Reclaimable: ${unusedVolumes.length} unused (${formatBytes(unusedVolumesSize)})`));
+  console.log('');
+
+  console.log(chalk.cyan('  Build Cache:'));
+  console.log(`    Total: ${buildCache.length} entries (${formatBytes(buildCacheSize)})`);
+  console.log(`    ${progressBar((buildCacheSize / maxSize) * 100, maxBarWidth, { showPercent: false })}`);
+  console.log(chalk.yellow(`    Reclaimable: ${formatBytes(buildCacheSize)}`));
+  console.log('');
+
+  console.log(chalk.bold.green(`  Total Reclaimable: ${formatBytes(totalReclaimable)}`));
+  console.log('');
+
+  // Prune options
+  const action = await select({
+    message: 'What would you like to clean?',
+    choices: [
+      {
+        name: `🧹 Quick Clean ${chalk.gray(`(containers + dangling images) - ${formatBytes(stoppedContainersSize + danglingImagesSize)}`)}`,
+        value: 'quick',
+      },
+      {
+        name: `🔥 Full Clean ${chalk.gray(`(all unused resources) - ${formatBytes(totalReclaimable)}`)}`,
+        value: 'full',
+      },
+      { name: chalk.gray('─────────────────────'), value: 'separator', disabled: true },
+      {
+        name: `📦 Stopped Containers only ${chalk.gray(`(${stoppedContainers.length}) - ${formatBytes(stoppedContainersSize)}`)}`,
+        value: 'containers',
+      },
+      {
+        name: `🖼️  Dangling Images only ${chalk.gray(`(${danglingImages.length}) - ${formatBytes(danglingImagesSize)}`)}`,
+        value: 'images',
+      },
+      {
+        name: `💾 Unused Volumes only ${chalk.gray(`(${unusedVolumes.length}) - ${formatBytes(unusedVolumesSize)}`)}`,
+        value: 'volumes',
+      },
+      {
+        name: `🔨 Build Cache only ${chalk.gray(`- ${formatBytes(buildCacheSize)}`)}`,
+        value: 'buildcache',
+      },
+      {
+        name: `🌐 Unused Networks only`,
+        value: 'networks',
+      },
+      { name: chalk.gray('─────────────────────'), value: 'separator2', disabled: true },
+      { name: '← Back to main menu', value: 'back' },
+    ],
+  });
+
+  if (action === 'back') {
+    return mainMenu();
+  }
+
+  // Confirm action
+  let confirmMessage = '';
+  switch (action) {
+    case 'quick':
+      confirmMessage = 'Remove stopped containers and dangling images?';
+      break;
+    case 'full':
+      confirmMessage = 'Remove ALL unused resources? (containers, images, volumes, networks, build cache)';
+      break;
+    case 'containers':
+      confirmMessage = `Remove ${stoppedContainers.length} stopped containers?`;
+      break;
+    case 'images':
+      confirmMessage = `Remove ${danglingImages.length} dangling images?`;
+      break;
+    case 'volumes':
+      confirmMessage = `Remove ${unusedVolumes.length} unused volumes? (This cannot be undone!)`;
+      break;
+    case 'buildcache':
+      confirmMessage = 'Clear build cache?';
+      break;
+    case 'networks':
+      confirmMessage = 'Remove unused networks?';
+      break;
+  }
+
+  const confirmed = await confirm({
+    message: confirmMessage,
+    default: false,
+  });
+
+  if (!confirmed) {
+    await systemPruneWizard();
+    return;
+  }
+
+  // Execute prune operations
+  clearScreen();
+  showHeader('Cleaning...');
+  console.log('');
+
+  const results = {
+    containers: { count: 0, space: 0 },
+    images: { count: 0, space: 0 },
+    volumes: { count: 0, space: 0 },
+    networks: { count: 0 },
+    buildCache: { count: 0, space: 0 },
+  };
+
+  const pruneSpinner = ora();
+
+  try {
+    // Containers
+    if (['quick', 'full', 'containers'].includes(action)) {
+      pruneSpinner.start('Removing stopped containers...');
+      const result = await dockerPruneContainers();
+      results.containers.count = result.ContainersDeleted?.length || 0;
+      results.containers.space = result.SpaceReclaimed || 0;
+      pruneSpinner.succeed(`Removed ${results.containers.count} containers (${formatBytes(results.containers.space)})`);
+    }
+
+    // Images
+    if (['quick', 'full', 'images'].includes(action)) {
+      pruneSpinner.start('Removing dangling images...');
+      const result = await dockerPruneImages();
+      results.images.count = result.ImagesDeleted?.length || 0;
+      results.images.space = result.SpaceReclaimed || 0;
+      pruneSpinner.succeed(`Removed ${results.images.count} images (${formatBytes(results.images.space)})`);
+    }
+
+    // Volumes
+    if (['full', 'volumes'].includes(action)) {
+      pruneSpinner.start('Removing unused volumes...');
+      const result = await dockerPruneVolumes();
+      results.volumes.count = result.VolumesDeleted?.length || 0;
+      results.volumes.space = result.SpaceReclaimed || 0;
+      pruneSpinner.succeed(`Removed ${results.volumes.count} volumes (${formatBytes(results.volumes.space)})`);
+    }
+
+    // Networks
+    if (['full', 'networks'].includes(action)) {
+      pruneSpinner.start('Removing unused networks...');
+      const result = await dockerPruneNetworks();
+      results.networks.count = result.NetworksDeleted?.length || 0;
+      pruneSpinner.succeed(`Removed ${results.networks.count} networks`);
+    }
+
+    // Build Cache
+    if (['full', 'buildcache'].includes(action)) {
+      pruneSpinner.start('Clearing build cache...');
+      try {
+        const result = await pruneBuildCache();
+        results.buildCache.count = result.CachesDeleted?.length || 0;
+        results.buildCache.space = result.SpaceReclaimed || 0;
+        pruneSpinner.succeed(`Cleared build cache (${formatBytes(results.buildCache.space)})`);
+      } catch {
+        pruneSpinner.warn('Build cache prune not available');
+      }
+    }
+
+    // Summary
+    console.log('');
+    const totalReclaimed =
+      results.containers.space +
+      results.images.space +
+      results.volumes.space +
+      results.buildCache.space;
+
+    console.log(chalk.bold.green(`  Total space reclaimed: ${formatBytes(totalReclaimed)}`));
+
+  } catch (error) {
+    pruneSpinner.fail(`Prune failed: ${error.message}`);
+  }
+
+  await pressEnterToContinue();
+  return mainMenu();
 }
 
 /**

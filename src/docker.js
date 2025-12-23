@@ -112,4 +112,62 @@ export async function systemPrune() {
   return { containers, images, volumes, networks };
 }
 
+/**
+ * Prune stopped containers
+ * @returns {Promise<Object>}
+ */
+export async function pruneContainers() {
+  return docker.pruneContainers();
+}
+
+/**
+ * Prune unused images
+ * @param {boolean} all - Remove all unused images, not just dangling
+ * @returns {Promise<Object>}
+ */
+export async function pruneImages(all = false) {
+  return docker.pruneImages({ filters: all ? {} : { dangling: { true: true } } });
+}
+
+/**
+ * Prune unused volumes
+ * @returns {Promise<Object>}
+ */
+export async function pruneVolumes() {
+  return docker.pruneVolumes();
+}
+
+/**
+ * Prune unused networks
+ * @returns {Promise<Object>}
+ */
+export async function pruneNetworks() {
+  return docker.pruneNetworks();
+}
+
+/**
+ * Prune build cache
+ * @returns {Promise<Object>}
+ */
+export async function pruneBuildCache() {
+  // Build cache prune via API
+  return docker.pruneBuilder();
+}
+
+/**
+ * Get Docker disk usage info
+ * @returns {Promise<Object>}
+ */
+export async function getDiskUsage() {
+  return docker.df();
+}
+
+/**
+ * Get system info
+ * @returns {Promise<Object>}
+ */
+export async function getSystemInfo() {
+  return docker.info();
+}
+
 export default docker;

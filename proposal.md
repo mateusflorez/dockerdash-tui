@@ -189,9 +189,9 @@ dockerdash-tui/
 - [x] Image tagging
 
 ### v1.3.0 - Advanced
-- [ ] Exec shell integration
-- [ ] Volume/Network management
-- [ ] System prune wizard
+- [x] Exec shell integration
+- [x] Volume/Network management
+- [x] System prune wizard
 - [ ] Export/Import containers
 
 ## Keyboard Shortcuts

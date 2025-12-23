@@ -20,6 +20,22 @@ import { quickRebuild } from './src/images.js';
 
 const VERSION = '1.0.0';
 
+// Handle graceful exit on SIGINT (Ctrl+C)
+process.on('SIGINT', () => {
+  console.log(chalk.cyan('\n\nGoodbye!\n'));
+  process.exit(0);
+});
+
+// Handle uncaught exceptions from Inquirer prompts
+process.on('uncaughtException', (error) => {
+  if (error.name === 'ExitPromptError') {
+    console.log(chalk.cyan('\n\nGoodbye!\n'));
+    process.exit(0);
+  }
+  console.error(chalk.red('\nUnexpected error:'), error.message);
+  process.exit(1);
+});
+
 program
   .name('dockerdash')
   .description('A terminal UI for managing Docker containers with real-time monitoring')
